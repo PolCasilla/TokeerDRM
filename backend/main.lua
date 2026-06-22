@@ -8,16 +8,32 @@ local json       = require("json")
 local ffi        = require("ffi")
 local os         = require("os")
 
+-- Candidate full paths for a file relative to the plugin folder. Millennium has
+-- used BOTH <steam>\plugins\TokeerDRM and <steam>\millennium\plugins\TokeerDRM across
+-- versions, so check both layouts (and the common install dirs) — otherwise files
+-- like extract_tickets.exe / server.txt aren't found if the plugin lives in the
+-- other one ("extract_tickets.exe not found in plugin folder").
+local function plugin_candidates(rel)
+    local bases = {}
+    local ok, p = pcall(function() return millennium.steam_path end)
+    if ok and type(p) == "string" and #p > 0 then bases[#bases + 1] = p end
+    local pf = os.getenv("ProgramFiles(x86)") or "C:\\Program Files (x86)"
+    bases[#bases + 1] = pf .. "\\Steam"
+    bases[#bases + 1] = "C:\\Program Files (x86)\\Steam"
+    local out = {}
+    local seen = {}
+    for _, b in ipairs(bases) do
+        for _, mid in ipairs({ "\\plugins\\TokeerDRM\\", "\\millennium\\plugins\\TokeerDRM\\" }) do
+            local full = b .. mid .. rel
+            if not seen[full] then seen[full] = true; out[#out + 1] = full end
+        end
+    end
+    return out
+end
+
 -- Server URL is read from backend\server.txt (gitignored — never in the public repo).
 local function load_server_url()
-    local cands = {}
-    local ok, p = pcall(function() return millennium.steam_path end)
-    if ok and type(p) == "string" and #p > 0 then
-        cands[#cands + 1] = p .. "\\millennium\\plugins\\TokeerDRM\\backend\\server.txt"
-    end
-    local pf = os.getenv("ProgramFiles(x86)") or "C:\\Program Files (x86)"
-    cands[#cands + 1] = pf .. "\\Steam\\millennium\\plugins\\TokeerDRM\\backend\\server.txt"
-    for _, path in ipairs(cands) do
+    for _, path in ipairs(plugin_candidates("backend\\server.txt")) do
         local f = io.open(path, "r")
         if f then
             local url = (f:read("*l") or ""):gsub("%s+$", "")
@@ -29,7 +45,7 @@ local function load_server_url()
 end
 
 local SERVER_URL = load_server_url()
-local PLUGIN_VERSION = "1.0.2"               -- bump on every release
+local PLUGIN_VERSION = "1.0.3"               -- bump on every release
 local UPDATE_REPO    = "Tesla697/TokeerDRM"  -- latest release here force-gates the plugin
 
 -- ── FFI: Windows Registry (advapi32) ─────────────────────────────────────────
@@ -324,15 +340,7 @@ local function file_exists(path)
 end
 
 local function find_extract_exe()
-    local cands = {}
-    local ok, p = pcall(function() return millennium.steam_path end)
-    if ok and type(p) == "string" and #p > 0 then
-        cands[#cands + 1] = p .. "\\millennium\\plugins\\TokeerDRM\\backend\\extract_tickets.exe"
-    end
-    local pf = os.getenv("ProgramFiles(x86)") or "C:\\Program Files (x86)"
-    cands[#cands + 1] = pf .. "\\Steam\\millennium\\plugins\\TokeerDRM\\backend\\extract_tickets.exe"
-    cands[#cands + 1] = "C:\\Program Files (x86)\\Steam\\millennium\\plugins\\TokeerDRM\\backend\\extract_tickets.exe"
-    for _, c in ipairs(cands) do
+    for _, c in ipairs(plugin_candidates("backend\\extract_tickets.exe")) do
         if file_exists(c) then return c end
     end
     return nil
@@ -369,14 +377,7 @@ local function config_ok(core)
 end
 
 local function find_install_script()
-    local cands = {}
-    local ok, p = pcall(function() return millennium.steam_path end)
-    if ok and type(p) == "string" and #p > 0 then
-        cands[#cands + 1] = p .. "\\millennium\\plugins\\TokeerDRM\\backend\\install_ost.ps1"
-    end
-    local pf = os.getenv("ProgramFiles(x86)") or "C:\\Program Files (x86)"
-    cands[#cands + 1] = pf .. "\\Steam\\millennium\\plugins\\TokeerDRM\\backend\\install_ost.ps1"
-    for _, c in ipairs(cands) do
+    for _, c in ipairs(plugin_candidates("backend\\install_ost.ps1")) do
         if file_exists(c) then return c end
     end
     return nil
