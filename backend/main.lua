@@ -382,6 +382,67 @@ local function find_install_script()
     return nil
 end
 
+-- ── OST version tracking + auto-heal classification ──────────────────────────
+-- Steam updates can wipe the OST hijack DLLs → redeemed tickets are ignored
+-- (Denuvo 88500000). We tag each install (shared marker the TokeerDRM app also
+-- writes) so we can tell a clobbered install (repair, auto-fix) from a never-set-up
+-- one (install, manual) and from an outdated build (update, auto-fix).
+local OST_REPO       = "OpenSteam001/OpenSteamTool"
+local OST_MARKER     = ".tokeer_ost_version"
+local _ost_latest    = { tag = nil, at = 0 }
+local _engine_healed = false  -- fire the elevated repair/update at most once per load
+
+local function hijack_present()
+    local dir = steam_dir()
+    return file_exists(dir .. "\\dwmapi.dll") and file_exists(dir .. "\\xinput1_4.dll")
+end
+
+local function read_ost_marker()
+    local f = io.open(steam_dir() .. "\\" .. OST_MARKER, "r")
+    if not f then return nil end
+    local t = trim(f:read("*l") or ""); f:close()
+    if #t == 0 then return nil end
+    return t
+end
+
+local function latest_ost_tag()
+    local now = os.time()
+    if _ost_latest.tag and (now - _ost_latest.at) < 21600 then return _ost_latest.tag end  -- cache 6h
+    local ok, resp = pcall(http.request, "https://api.github.com/repos/" .. OST_REPO .. "/releases/latest", {
+        method = "GET", headers = { ["User-Agent"] = "TokeerDRM", ["Accept"] = "application/vnd.github+json" }, timeout = 8,
+    })
+    if ok and resp and resp.status == 200 then
+        local pok, parsed = pcall(json.decode, resp.body or "")
+        if pok and type(parsed) == "table" and parsed.tag_name then
+            _ost_latest.tag = tostring(parsed.tag_name); _ost_latest.at = now
+            return _ost_latest.tag
+        end
+    end
+    return nil
+end
+
+-- "install" (first-time → manual) | "repair" (we set it up, now broken → auto) |
+-- "update" (newer OST release → auto) | "none"
+local function ost_action()
+    local has_core, core = engine_present()
+    local ready  = has_core and hijack_present() and config_ok(core)
+    local marker = read_ost_marker()
+    if not ready then return (marker and "repair" or "install") end
+    local latest = latest_ost_tag()
+    if latest and marker and latest ~= marker then return "update" end
+    return "none"
+end
+
+-- Launch install_ost.ps1 elevated; -Force re-downloads the engine (used for updates).
+local function launch_install(force)
+    local script = find_install_script()
+    if not script then return false, "OpenSteamTool installer not found in the plugin folder" end
+    local params = '-NoProfile -ExecutionPolicy Bypass -File "' .. script .. '"'
+    if force then params = params .. " -Force" end
+    shell32.ShellExecuteA(nil, "runas", "powershell.exe", params, nil, 1)  -- SW_SHOWNORMAL
+    return true, nil
+end
+
 -- Run extract_tickets.exe --pipe <appid> as a fresh process, capturing its
 -- stdout ("<appid>|<AppTicket>|<ETicket>|<SteamID>"). Returns
 -- appticket, eticket, steam_id (or nil + error).
@@ -550,21 +611,29 @@ function OpenUrl(url)
 end
 
 -- Is a Denuvo-capable engine (OpenSteamTool / mktl) active AND configured?
+-- Auto-heals once per load: if OST was set up here before but a Steam update
+-- clobbered it ('repair'), or a newer OST release exists ('update'), the elevated
+-- installer is launched automatically. First-time setup ('install') stays manual
+-- (the Set-it-up button) so a brand-new user isn't surprised by a UAC prompt.
 function EngineStatus()
+    local action = ost_action()
+    if (action == "repair" or action == "update") and not _engine_healed then
+        _engine_healed = true
+        logger:info("TokeerDRM: auto-" .. action .. " OpenSteamTool")
+        launch_install(action == "update")
+    end
     local ok, core = engine_present()
-    local ready = ok and config_ok(core)
-    return json.encode({ installed = ok, ready = ready, engine = core or nil })
+    local ready = ok and hijack_present() and config_ok(core)
+    return json.encode({ installed = ok, ready = ready, engine = core or nil, action = action })
 end
 
 -- Launch the OpenSteamTool installer (elevated). Steam restarts afterward,
 -- which reloads this plugin with the engine active.
 function InstallEngine()
-    local script = find_install_script()
-    if not script then
-        return json.encode({ success = false, error = "OpenSteamTool installer not found in the plugin folder" })
+    local ok, err = launch_install(false)
+    if not ok then
+        return json.encode({ success = false, error = err })
     end
-    local params = '-NoProfile -ExecutionPolicy Bypass -File "' .. script .. '"'
-    shell32.ShellExecuteA(nil, "runas", "powershell.exe", params, nil, 1)  -- SW_SHOWNORMAL
     logger:info("TokeerDRM: launched OpenSteamTool installer")
     return json.encode({
         success = true,

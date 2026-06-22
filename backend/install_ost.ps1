@@ -3,8 +3,20 @@
 # Launched by the plugin when no Denuvo-capable engine is detected.
 # Downloads the latest OST release from GitHub, backs up the current engine,
 # points OST at the existing config\stplug-in library, and restarts Steam.
+# -Force re-downloads + replaces the engine even if it's already present (updates).
+param([switch]$Force)
 
 $ErrorActionPreference = "Stop"
+
+# Shared marker (same file the TokeerDRM app writes) recording the installed OST
+# release tag, so detection can tell repair-needed from outdated.
+$OstVersionFile = ".tokeer_ost_version"
+function Get-LatestOstTag {
+    try { return (Invoke-RestMethod "https://api.github.com/repos/OpenSteam001/OpenSteamTool/releases/latest" -Headers @{ "User-Agent" = "TokeerDRM" }).tag_name } catch { return $null }
+}
+function Set-OstVersionMarker($steam, $tag) {
+    if ($steam -and $tag) { try { [IO.File]::WriteAllText((Join-Path $steam $OstVersionFile), [string]$tag) } catch {} }
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 $Host.UI.RawUI.WindowTitle = "TokeerDRM — OpenSteamTool setup"
@@ -30,7 +42,7 @@ Write-Host "[+] Steam: $steam" -ForegroundColor Green
 $haveCore   = (Test-Path (Join-Path $steam "OpenSteamTool.dll")) -or (Test-Path (Join-Path $steam "mktl.dll"))
 $haveHijack = (Test-Path (Join-Path $steam "dwmapi.dll")) -and (Test-Path (Join-Path $steam "xinput1_4.dll"))
 $isMktl     = Test-Path (Join-Path $steam "mktl.dll")
-if ($haveCore -and $haveHijack) {
+if ($haveCore -and $haveHijack -and -not $Force) {
     Write-Host "[*] OpenSteamTool already installed — finishing setup (config only)..." -ForegroundColor Cyan
     try { Add-MpPreference -ExclusionPath $steam -ErrorAction SilentlyContinue } catch {}
     if (-not $isMktl) {
@@ -69,6 +81,7 @@ paths = ["config/stplug-in"]
             Write-Host "[+] Pointed OpenSteamTool at config\stplug-in." -ForegroundColor Green
         }
     }
+    Set-OstVersionMarker $steam (Get-LatestOstTag)
     Write-Host "`n[OK] OpenSteamTool configured. Redeem your code.`n" -ForegroundColor Green
     Start-Sleep 2
     exit 0
@@ -129,6 +142,8 @@ enable_api = true
 [lua]
 paths = ["config/stplug-in"]
 "@ | Set-Content (Join-Path $steam "opensteamtool.toml") -Encoding UTF8
+
+Set-OstVersionMarker $steam $rel.tag_name
 
 # 8. restart Steam
 Write-Host "[*] Restarting Steam..."
