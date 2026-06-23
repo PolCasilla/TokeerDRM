@@ -1,5 +1,5 @@
 # =============================================================================
-#  TokeerDRM — one-click plugin installer
+#  TokeerDRM - one-click plugin installer
 #  Installs Millennium (if missing), drops in the TokeerDRM plugin, enables it,
 #  and restarts Steam. Run:  irm https://raw.githubusercontent.com/Tesla697/TokeerDRM/main/install_plugin.ps1 | iex
 # =============================================================================
@@ -50,17 +50,17 @@ Step 'Checking Millennium...'
 if (Test-Millennium $steam) {
     Good 'Millennium already installed.'
 } else {
-    Warn 'Millennium not found — downloading the latest installer...'
+    Warn 'Millennium not found - downloading the latest installer...'
     try {
         $rel = Invoke-RestMethod 'https://api.github.com/repos/SteamClientHomebrew/Installer/releases/latest' -Headers $UA
         $asset = $rel.assets | Where-Object { $_.name -match '(?i)windows.*\.exe$' } | Select-Object -First 1
         if (-not $asset) { Die 'Could not find the Millennium Windows installer.' }
         $mexe = Join-Path $env:TEMP 'MillenniumInstaller.exe'
         Invoke-WebRequest $asset.browser_download_url -OutFile $mexe -Headers $UA
-        Good 'Launching the Millennium installer — click through it (Install), then it returns here.'
+        Good 'Launching the Millennium installer - click through it (Install), then it returns here.'
         Start-Process -FilePath $mexe -Wait
     } catch { Die "Millennium install failed: $($_.Exception.Message)" }
-    if (Test-Millennium $steam) { Good 'Millennium installed.' } else { Warn 'Could not confirm Millennium — continuing anyway.' }
+    if (Test-Millennium $steam) { Good 'Millennium installed.' } else { Warn 'Could not confirm Millennium - continuing anyway.' }
 }
 
 # --- 3. Download + place the plugin ------------------------------------------

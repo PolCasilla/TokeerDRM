@@ -1,13 +1,13 @@
 #Requires -Version 5.1
-# TokeerDRM — in-place plugin updater. Downloads the latest release zip from GitHub,
+# TokeerDRM - in-place plugin updater. Downloads the latest release zip from GitHub,
 # closes Steam (so Millennium releases the plugin files), extracts the new build over
 # the existing plugin folder, and restarts Steam so Millennium reloads it. Launched by
-# the plugin's "Update now" button — no browser, no manual download.
+# the plugin's "Update now" button - no browser, no manual download.
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 $UA = @{ "User-Agent" = "TokeerDRM" }
-$Host.UI.RawUI.WindowTitle = "TokeerDRM — plugin update"
+$Host.UI.RawUI.WindowTitle = "TokeerDRM - plugin update"
 
 # Log + keep the window open on failure so an error never "just flashes and closes".
 $LogPath = Join-Path $env:TEMP "tokeerdrm_plugin_update.log"
@@ -16,7 +16,7 @@ trap {
     Write-Host "`n[ERROR] $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Full log: $LogPath" -ForegroundColor Yellow
     try { Stop-Transcript | Out-Null } catch {}
-    Read-Host "`nUpdate failed — press Enter to close"
+    Read-Host "`nUpdate failed - press Enter to close"
     exit 1
 }
 
@@ -34,7 +34,7 @@ function Get-SteamPath {
 Write-Host "`n=== TokeerDRM: updating the plugin ===`n" -ForegroundColor Cyan
 $steam = Get-SteamPath
 
-# Existing plugin folder — Millennium has used both layouts across versions.
+# Existing plugin folder - Millennium has used both layouts across versions.
 $dest = @("$steam\plugins\TokeerDRM", "$steam\millennium\plugins\TokeerDRM") |
         Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $dest) { throw "TokeerDRM plugin folder not found" }
@@ -65,7 +65,7 @@ Copy-Item (Join-Path $tmp '*') $dest -Recurse -Force
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 
-# 4. restart Steam → Millennium reloads the plugin
+# 4. restart Steam -> Millennium reloads the plugin
 Write-Host "[*] Restarting Steam..."
 Start-Process (Join-Path $steam "steam.exe")
 Write-Host "`n[OK] Plugin updated to $($rel.tag_name). Open any game's Properties > TokeerDRM.`n" -ForegroundColor Green
