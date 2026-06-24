@@ -40,46 +40,80 @@ foreach ($r in @(
 if (-not $steam) { Die 'Steam not found. Install and run Steam once, then re-run this.' }
 Good "Steam: $steam"
 
-# Detect a REAL Millennium core - an actual loader binary, not just a leftover
-# folder. An uninstall can leave millennium\config|logs behind; those must NOT
-# count as "installed" or we skip the real setup and the tab never appears.
-# Handles both builds:
-#   - standard  : user32.dll proxy + embedded python (python3*.dll) in Steam root
-#   - luavm fork: a loader .exe under millennium\bin (e.g. millennium.luavm64.exe)
+# Detect a REAL Millennium core - a proxy loader AND the core binaries, not just
+# a leftover folder. An uninstall can leave millennium\config|logs behind; those
+# must NOT count or we skip the real setup and the tab never appears.
+#   proxy loader (Steam root): wsock32.dll (current) or user32.dll (older builds)
+#   core: millennium\bin\*.exe + millennium\lib\millennium.dll (or legacy python)
 function Get-MillenniumState($s) {
-    $stdReady = (Test-Path (Join-Path $s 'user32.dll')) -and `
-                [bool](Get-ChildItem $s -Filter 'python3*.dll' -ErrorAction SilentlyContinue | Select-Object -First 1)
-    $luaReady = [bool](Get-ChildItem (Join-Path $s 'millennium\bin') -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $proxy = (Test-Path (Join-Path $s 'wsock32.dll')) -or (Test-Path (Join-Path $s 'user32.dll'))
+    $core  = [bool](Get-ChildItem (Join-Path $s 'millennium\bin') -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1) -or `
+             (Test-Path (Join-Path $s 'millennium\lib\millennium.dll')) -or `
+             [bool](Get-ChildItem $s -Filter 'python3*.dll' -ErrorAction SilentlyContinue | Select-Object -First 1)
     [pscustomobject]@{
-        StdReady = $stdReady
-        LuaReady = $luaReady
-        Setup    = ($stdReady -or $luaReady)
+        Proxy = $proxy
+        Core  = $core
+        Setup = ($proxy -and $core)
     }
+}
+
+function Stop-Steam {
+    & (Join-Path $steam 'steam.exe') -shutdown 2>$null
+    for ($i=0; $i -lt 20; $i++) { Start-Sleep 1; if (-not (Get-Process steam -ErrorAction SilentlyContinue)) { break } }
+    Get-Process steam,steamwebhelper -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep 1
+}
+
+# Install Millennium headlessly - exactly what the official GUI installer does
+# internally: download the Windows release zip, verify its SHA-256 against the
+# release digest, extract into the Steam folder. No window, no clicks. (The
+# Python env self-bootstraps on the first Steam launch.)
+function Install-MillenniumHeadless($steamRoot) {
+    $rel = Invoke-RestMethod 'https://api.github.com/repos/SteamClientHomebrew/Millennium/releases/latest' -Headers $UA
+    $asset = $rel.assets | Where-Object { $_.name -match '(?i)windows.*x86_64\.zip$' } | Select-Object -First 1
+    if (-not $asset) { throw 'no Windows package in the latest Millennium release' }
+    $zip = Join-Path $env:TEMP $asset.name
+    Invoke-WebRequest $asset.browser_download_url -OutFile $zip -Headers $UA
+    if ($asset.digest) {
+        $want = ($asset.digest -replace 'sha256:','').Trim().ToLower()
+        $got  = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+        if ($want -and $want -ne $got) { Remove-Item $zip -Force -ErrorAction SilentlyContinue; throw 'download hash mismatch' }
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $ex = Join-Path $env:TEMP ('mln-' + [guid]::NewGuid().ToString('N'))
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $ex)
+    Get-ChildItem -LiteralPath $ex -Force | Copy-Item -Destination $steamRoot -Recurse -Force
+    Remove-Item $ex, $zip -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --- 2. Millennium -----------------------------------------------------------
 Step 'Checking Millennium...'
 $mil = Get-MillenniumState $steam
 if ($mil.Setup) {
-    Good ('Millennium core found ({0} build).' -f $(if ($mil.LuaReady) { 'luavm' } else { 'standard' }))
+    Good 'Millennium core found.'
 } else {
-    Warn 'No working Millennium core found (a leftover folder does NOT count) - installing it now...'
+    Warn 'No working Millennium found (a leftover folder does NOT count) - installing it automatically...'
+    Stop-Steam   # can't write into the Steam folder while Steam holds the DLLs
     try {
-        $rel = Invoke-RestMethod 'https://api.github.com/repos/SteamClientHomebrew/Installer/releases/latest' -Headers $UA
-        $asset = $rel.assets | Where-Object { $_.name -match '(?i)windows.*\.exe$' } | Select-Object -First 1
-        if (-not $asset) { Die 'Could not find the Millennium Windows installer.' }
-        $mexe = Join-Path $env:TEMP 'MillenniumInstaller.exe'
-        Invoke-WebRequest $asset.browser_download_url -OutFile $mexe -Headers $UA
-        Good 'Launching the Millennium installer - click Install and let it FINISH, then come back here.'
-        Start-Process -FilePath $mexe -Wait
-    } catch { Die "Millennium install failed: $($_.Exception.Message)" }
+        Install-MillenniumHeadless $steam
+        Good 'Millennium downloaded + installed (signature verified).'
+    } catch {
+        Warn "Automatic install failed ($($_.Exception.Message)) - falling back to the Millennium setup window..."
+        try {
+            $rel = Invoke-RestMethod 'https://api.github.com/repos/SteamClientHomebrew/Installer/releases/latest' -Headers $UA
+            $asset = $rel.assets | Where-Object { $_.name -match '(?i)windows.*\.exe$' } | Select-Object -First 1
+            if (-not $asset) { Die 'Could not find the Millennium installer.' }
+            $mexe = Join-Path $env:TEMP 'MillenniumInstaller.exe'
+            Invoke-WebRequest $asset.browser_download_url -OutFile $mexe -Headers $UA
+            Good 'Launching the Millennium installer - click Install, let it finish, then come back here.'
+            Start-Process -FilePath $mexe -Wait
+        } catch { Die "Millennium install failed: $($_.Exception.Message)" }
+    }
 
-    # HARD re-check by loader binary - never continue on a non-install, or the
-    # plugin tab silently never appears (Millennium isn't actually injecting).
+    # HARD re-check - never continue on a non-install, or the tab never appears.
     $mil = Get-MillenniumState $steam
     if (-not $mil.Setup) {
-        Die ("Millennium still isn't installed after the setup. Open the Millennium installer again, " +
-             "let it finish completely (you should see it succeed), then re-run this script.")
+        Die 'Millennium still is not installed. Re-run this script; if it keeps failing, install Millennium manually then re-run.'
     }
     Good 'Millennium installed.'
 }
@@ -202,7 +236,7 @@ $okFiles   = (Test-Path (Join-Path $dest 'plugin.json')) -and `
              (Test-Path (Join-Path $dest 'backend\main.lua')) -and `
              (Test-Path (Join-Path $dest '.millennium\Dist\index.js'))
 $okEnabled = $enabled
-if ($okCore)    { Good 'Millennium core set up (loader + python + core)' } else { Warn 'Millennium core NOT fully set up' }
+if ($okCore)    { Good 'Millennium core set up (proxy + core binaries)' } else { Warn 'Millennium core NOT fully set up' }
 if ($okFiles)   { Good 'Plugin files present (manifest + backend + frontend)' } else { Warn 'Plugin files incomplete' }
 if ($okEnabled) { Good 'Plugin enabled + verified in settings' } else { Warn 'Plugin not confirmed enabled' }
 
