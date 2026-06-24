@@ -45,7 +45,7 @@ local function load_server_url()
 end
 
 local SERVER_URL = load_server_url()
-local PLUGIN_VERSION = "1.0.10"               -- bump on every release
+local PLUGIN_VERSION = "1.0.11"               -- bump on every release
 local UPDATE_REPO    = "Tesla697/TokeerDRM"  -- latest release here force-gates the plugin
 
 -- ── FFI: Windows Registry (advapi32) ─────────────────────────────────────────
@@ -694,6 +694,23 @@ function InstallEngine()
     })
 end
 
+-- For "012" games the server flags with write_lua: write the ticket into
+-- config\stplug-in via OST's setappticket/seteticket lua API, so OST serves it to the
+-- game's LIVE RequestEncryptedAppTicket call (the registry write alone only covers the
+-- passive ownership read, which is why those games 012). Separate file so a wrong guess
+-- can't break the game's own lua.
+local function write_ticket_lua(app_id, appticket, eticket)
+    local dir = steam_dir() .. "\\config\\stplug-in"
+    local path = dir .. "\\tokeerdrm_" .. app_id .. ".lua"
+    local f = io.open(path, "w")
+    if not f then return false, "cannot open " .. path end
+    f:write("addappid(" .. app_id .. ")\n")
+    f:write('setappticket(' .. app_id .. ', "' .. appticket .. '")\n')
+    f:write('seteticket(' .. app_id .. ', "' .. eticket .. '")\n')
+    f:close()
+    return true
+end
+
 function RedeemCode(app_id, code)
     app_id = trim(app_id)
     code   = trim(code):upper()
@@ -734,6 +751,13 @@ function RedeemCode(app_id, code)
     if not ok then
         logger:error("TokeerDRM registry write failed: " .. tostring(write_err))
         return json.encode({ success = false, error = "Registry write failed: " .. tostring(write_err) })
+    end
+
+    -- 012 games: ALSO write the seteticket lua so OST serves the live encrypted-ticket call.
+    if result.write_lua then
+        local lok, lerr = write_ticket_lua(app_id, appticket, eticket)
+        if lok then logger:info("TokeerDRM: wrote seteticket lua for " .. app_id)
+        else logger:warn("TokeerDRM: seteticket lua write failed: " .. tostring(lerr)) end
     end
 
     logger:info("TokeerDRM: redeemed " .. code .. " for app " .. app_id)
