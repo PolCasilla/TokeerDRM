@@ -40,19 +40,20 @@ foreach ($r in @(
 if (-not $steam) { Die 'Steam not found. Install and run Steam once, then re-run this.' }
 Good "Steam: $steam"
 
-# Inspect Millennium's actual state. "Installed" (a few files present) is NOT
-# the same as "set up" - the plugin tab only appears when the injection loader
-# (user32.dll proxy), the embedded Python runtime, AND the core dir all exist.
+# Detect a REAL Millennium core - an actual loader binary, not just a leftover
+# folder. An uninstall can leave millennium\config|logs behind; those must NOT
+# count as "installed" or we skip the real setup and the tab never appears.
+# Handles both builds:
+#   - standard  : user32.dll proxy + embedded python (python3*.dll) in Steam root
+#   - luavm fork: a loader .exe under millennium\bin (e.g. millennium.luavm64.exe)
 function Get-MillenniumState($s) {
-    $loader = Test-Path (Join-Path $s 'user32.dll')
-    $python = [bool](Get-ChildItem -Path $s -Filter 'python3*.dll' -ErrorAction SilentlyContinue | Select-Object -First 1)
-    $coreExt = Test-Path (Join-Path $s 'ext')
-    $coreMil = Test-Path (Join-Path $s 'millennium')
+    $stdReady = (Test-Path (Join-Path $s 'user32.dll')) -and `
+                [bool](Get-ChildItem $s -Filter 'python3*.dll' -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $luaReady = [bool](Get-ChildItem (Join-Path $s 'millennium\bin') -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1)
     [pscustomobject]@{
-        Loader = $loader
-        Python = $python
-        Core   = ($coreExt -or $coreMil)
-        Setup  = ($loader -and $python -and ($coreExt -or $coreMil))
+        StdReady = $stdReady
+        LuaReady = $luaReady
+        Setup    = ($stdReady -or $luaReady)
     }
 }
 
@@ -60,14 +61,9 @@ function Get-MillenniumState($s) {
 Step 'Checking Millennium...'
 $mil = Get-MillenniumState $steam
 if ($mil.Setup) {
-    Good 'Millennium is installed and set up.'
+    Good ('Millennium core found ({0} build).' -f $(if ($mil.LuaReady) { 'luavm' } else { 'standard' }))
 } else {
-    if ($mil.Loader -or $mil.Python -or $mil.Core) {
-        Warn 'Millennium looks only PARTIALLY installed (a previous setup never finished).'
-        Warn ("   loader={0}  python={1}  core={2}  -> re-running the installer to complete it." -f $mil.Loader, $mil.Python, $mil.Core)
-    } else {
-        Warn 'Millennium not found - downloading the latest installer...'
-    }
+    Warn 'No working Millennium core found (a leftover folder does NOT count) - installing it now...'
     try {
         $rel = Invoke-RestMethod 'https://api.github.com/repos/SteamClientHomebrew/Installer/releases/latest' -Headers $UA
         $asset = $rel.assets | Where-Object { $_.name -match '(?i)windows.*\.exe$' } | Select-Object -First 1
@@ -78,15 +74,14 @@ if ($mil.Setup) {
         Start-Process -FilePath $mexe -Wait
     } catch { Die "Millennium install failed: $($_.Exception.Message)" }
 
-    # HARD re-check: never continue on a half-installed Millennium - the plugin
-    # tab will silently never appear if loader/python/core aren't all present.
+    # HARD re-check by loader binary - never continue on a non-install, or the
+    # plugin tab silently never appears (Millennium isn't actually injecting).
     $mil = Get-MillenniumState $steam
     if (-not $mil.Setup) {
-        Die ("Millennium still isn't fully set up after the installer " +
-             "(loader=$($mil.Loader) python=$($mil.Python) core=$($mil.Core)). " +
-             "Re-run the Millennium installer, make sure it finishes without errors, then run this again.")
+        Die ("Millennium still isn't installed after the setup. Open the Millennium installer again, " +
+             "let it finish completely (you should see it succeed), then re-run this script.")
     }
-    Good 'Millennium installed and set up.'
+    Good 'Millennium installed.'
 }
 
 # --- 3. Download + place the plugin ------------------------------------------
@@ -169,7 +164,7 @@ function Enable-InConfig($cfg) {
 }
 
 $cfgs = New-Object System.Collections.Generic.List[string]
-foreach ($c in @("$steam\ext\data\settings.json", "$steam\millennium\settings.json", "$env:APPDATA\millennium\settings.json")) { $cfgs.Add($c) }
+foreach ($c in @("$steam\ext\data\settings.json", "$steam\millennium\settings.json", "$steam\millennium\config\config.json", "$env:APPDATA\millennium\settings.json")) { $cfgs.Add($c) }
 foreach ($root in @("$steam\ext", "$steam\millennium", "$env:APPDATA\millennium")) {
     if (Test-Path $root) {
         Get-ChildItem -Path $root -Recurse -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
