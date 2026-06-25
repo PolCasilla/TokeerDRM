@@ -340,9 +340,14 @@ local function file_exists(path)
 end
 
 local function find_extract_exe()
-    for _, c in ipairs(plugin_candidates("backend\\extract_tickets.exe")) do
-        if file_exists(c) then return c end
+    local candidates = plugin_candidates("backend\\extract_tickets.exe")
+    logger:info("TokeerDRM: searching for extract_tickets.exe — candidates:")
+    for _, c in ipairs(candidates) do
+        local exists = file_exists(c)
+        logger:info("  " .. (exists and "[✓] " or "[✗] ") .. c)
+        if exists then return c end
     end
+    logger:warn("TokeerDRM: extract_tickets.exe not found in any candidate path")
     return nil
 end
 
@@ -452,13 +457,13 @@ local function latest_ost_tag()
     return nil
 end
 
--- True when OpenSteamTool is fully active: core present, hijack proxies in place,
--- the toml/config points at config\stplug-in, AND the proxies are genuinely OST's.
+-- True when OpenSteamTool is active: core present, hijack proxies in place,
+-- AND the proxies are genuinely OST's (not SteamTools).
 -- A redeemed Denuvo ticket does nothing without this, so RedeemCode gates on it.
 -- Returns: ready(bool), installed(bool), core(string|nil).
 local function engine_ready()
     local ok, core = engine_present()
-    local ready = ok and hijack_present() and config_ok(core) and proxy_is_engine()
+    local ready = ok and hijack_present() and proxy_is_engine()
     return ready, ok, core
 end
 
@@ -694,6 +699,23 @@ function InstallEngine()
     })
 end
 
+-- For "012" games the server flags with write_lua: write the ticket into
+-- config\stplug-in via OST's setappticket/seteticket lua API, so OST serves it to the
+-- game's LIVE RequestEncryptedAppTicket call (the registry write alone only covers the
+-- passive ownership read, which is why those games 012). Separate file so a wrong guess
+-- can't break the game's own lua.
+local function write_ticket_lua(app_id, appticket, eticket)
+    local dir = steam_dir() .. "\\config\\stplug-in"
+    local path = dir .. "\\tokeerdrm_" .. app_id .. ".lua"
+    local f = io.open(path, "w")
+    if not f then return false, "cannot open " .. path end
+    f:write("addappid(" .. app_id .. ")\n")
+    f:write('setappticket(' .. app_id .. ', "' .. appticket .. '")\n')
+    f:write('seteticket(' .. app_id .. ', "' .. eticket .. '")\n')
+    f:close()
+    return true
+end
+
 function RedeemCode(app_id, code)
     app_id = trim(app_id)
     code   = trim(code):upper()
@@ -734,6 +756,13 @@ function RedeemCode(app_id, code)
     if not ok then
         logger:error("TokeerDRM registry write failed: " .. tostring(write_err))
         return json.encode({ success = false, error = "Registry write failed: " .. tostring(write_err) })
+    end
+
+    -- 012 games: ALSO write the seteticket lua so OST serves the live encrypted-ticket call.
+    if result.write_lua then
+        local lok, lerr = write_ticket_lua(app_id, appticket, eticket)
+        if lok then logger:info("TokeerDRM: wrote seteticket lua for " .. app_id)
+        else logger:warn("TokeerDRM: seteticket lua write failed: " .. tostring(lerr)) end
     end
 
     logger:info("TokeerDRM: redeemed " .. code .. " for app " .. app_id)
